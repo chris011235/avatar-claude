@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude VRM</title>
+<style>
+body{margin:0;overflow:hidden;background:radial-gradient(#3a2f55,#0c0a16);font-family:sans-serif;color:#fff}
+#panel{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:14px;align-items:center;z-index:2;background:rgba(0,0,0,0.4);padding:10px 16px;border-radius:14px}
+button{padding:10px 20px;font-size:16px;border:none;border-radius:16px;background:#ff7eb6;color:#fff;cursor:pointer}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(51,224,255,0.06) 0 2px,transparent 2px 4px);z-index:1}
+</style>
+<script type="importmap">
+{"imports":{
+"three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+"three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/",
+"@pixiv/three-vrm":"https://unpkg.com/@pixiv/three-vrm@2.1.0/lib/three-vrm.module.js"
+}}
+</script>
+</head>
+<body>
+<div id="panel">
+<input id="archivo" type="file" accept=".vrm">
+<button id="btn">Activar micrófono</button>
+<button id="btn2">Audio del computador</button>
+<label>Sensibilidad <input id="sens" type="range" min="2" max="40" value="15"></label>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+
+const render=new THREE.WebGLRenderer({antialias:true,alpha:true});
+render.setSize(innerWidth,innerHeight);
+render.setPixelRatio(devicePixelRatio);
+document.body.appendChild(render.domElement);
+const escena=new THREE.Scene();
+const camara=new THREE.PerspectiveCamera(30,innerWidth/innerHeight,0.1,20);
+camara.position.set(0,1.4,1.2);
+escena.add(new THREE.AmbientLight(0xffffff,0.8));
+const luz=new THREE.DirectionalLight(0xffffff,1.5);luz.position.set(1,2,2);escena.add(luz);
+
+let vrm=null;
+const loader=new GLTFLoader();
+loader.register(p=>new VRMLoaderPlugin(p));
+document.getElementById('archivo').onchange=e=>{
+const f=e.target.files[0];if(!f)return;
+const url=URL.createObjectURL(f);
+loader.load(url,gltf=>{
+if(vrm){escena.remove(vrm.scene);}
+vrm=gltf.userData.vrm;
+VRMUtils.rotateVRM0(vrm);
+escena.add(vrm.scene);
+const plata=new THREE.Color(0xc8d2e0);
+vrm.scene.traverse(o=>{if(!o.isMesh)return;const ms=Array.isArray(o.material)?o.material:[o.material];ms.forEach(m=>{
+if(m.color){m.color.lerp(plata,0.55);}
+if(m.shadeColorFactor){m.shadeColorFactor.set(0x5a6a85);}
+if(m.parametricRimColorFactor){m.parametricRimColorFactor.set(0x33e0ff);m.parametricRimFresnelPowerFactor=2.5;m.parametricRimLiftFactor=0.15;}
+if(m.emissive){m.emissive.set(0x0a3040);}
+if(m.rimLightingMixFactor!==undefined){m.rimLightingMixFactor=1;}
+});});
+const h=vrm.humanoid;
+h.getNormalizedBoneNode('leftUpperArm').rotation.z=-1.2;
+h.getNormalizedBoneNode('rightUpperArm').rotation.z=1.2;
+vrm.update(0);
+const p=new THREE.Vector3();
+h.getNormalizedBoneNode('head').getWorldPosition(p);
+camara.position.set(0,p.y+0.05,p.y*0.55);
+camara.lookAt(0,p.y-0.02,0);
+if(vrm.lookAt){vrm.lookAt.target=camara;}
+},undefined,err=>alert('No pude cargar el archivo: '+err));
+};
+
+let analizador=null,datos=null,apertura=0,energia=0;
+document.getElementById('btn').onclick=async()=>{
+const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false}});
+const ctx=new AudioContext();
+analizador=ctx.createAnalyser();analizador.fftSize=512;
+ctx.createMediaStreamSource(stream).connect(analizador);
+datos=new Uint8Array(analizador.fftSize);
+document.getElementById('btn').textContent='Escuchando...';
+};
+
+document.getElementById('btn2').onclick=async()=>{
+const s=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true});
+if(s.getAudioTracks().length===0){alert('Vuelve a intentarlo y marca la casilla de compartir audio');return;}
+const ctx=new AudioContext();
+analizador=ctx.createAnalyser();analizador.fftSize=512;
+ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks())).connect(analizador);
+datos=new Uint8Array(analizador.fftSize);
+document.getElementById('btn2').textContent='Escuchando el computador...';
+};
+
+const reloj=new THREE.Clock();
+let proximoParpadeo=2,vocal=0,proximaVocal=0;
+const vocales=['aa','oh','ee','ih','ou'];
+function animar(){
+const dt=reloj.getDelta();
+const t=reloj.elapsedTime;
+let vol=0;
+if(analizador){analizador.getByteTimeDomainData(datos);let s=0;for(const v of datos){const x=(v-128)/128;s+=x*x;}vol=Math.sqrt(s/datos.length);}
+const sens=+document.getElementById('sens').value;
+apertura+=(Math.min(1,vol*sens)-apertura)*0.5;
+energia+=(apertura-energia)*0.04;
+if(vrm){
+const em=vrm.expressionManager;
+if(t>proximaVocal){vocal=Math.floor(Math.random()*vocales.length);proximaVocal=t+0.12+Math.random()*0.1;}
+vocales.forEach((v,i)=>em.setValue(v,i===vocal?apertura:0));
+let parp=0;
+if(t>proximoParpadeo){parp=1;if(t>proximoParpadeo+0.12){proximoParpadeo=t+2+Math.random()*3;}}
+em.setValue('blink',parp);
+em.setValue('happy',0.15+energia*0.4);
+const h=vrm.humanoid;
+const cuello=h.getNormalizedBoneNode('neck');
+const cabeza=h.getNormalizedBoneNode('head');
+const pecho=h.getNormalizedBoneNode('chest');
+cuello.rotation.y=Math.sin(t*0.5)*0.08;
+cabeza.rotation.x=Math.sin(t*0.7)*0.03+apertura*0.06;
+cabeza.rotation.z=Math.sin(t*0.4)*0.04+energia*0.06;
+if(pecho){pecho.rotation.x=Math.sin(t*1.6)*0.01;}
+vrm.update(dt);
+}
+render.render(escena,camara);
+requestAnimationFrame(animar);
+}
+animar();
+addEventListener('resize',()=>{camara.aspect=innerWidth/innerHeight;camara.updateProjectionMatrix();render.setSize(innerWidth,innerHeight);});
+</script>
+</body>
+</html>
